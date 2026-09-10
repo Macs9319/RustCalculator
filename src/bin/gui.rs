@@ -14,7 +14,7 @@ const CTRL_BG: egui::Color32 = egui::Color32::from_rgb(50, 51, 60);
 const OP_BG: egui::Color32 = egui::Color32::from_rgb(51, 72, 102);
 const EQUALS_BG: egui::Color32 = egui::Color32::from_rgb(47, 110, 227);
 
-const BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 42.0);
+const BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 44.0);
 const SPACING: f32 = 5.0;
 const CORNER_RADIUS: u8 = 10;
 const DISPLAY_HEIGHT: f32 = 54.0;
@@ -134,6 +134,59 @@ fn calc_button(ui: &mut egui::Ui, label: &str, bg: egui::Color32, fg: egui::Colo
     .inner
 }
 
+/// A calculator button's semantic role, per the taxonomy in `CONTEXT.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyCategory {
+    Number,
+    Operator,
+    Control,
+}
+
+/// Classifies a key label per the `Operator key` / `Control key` / `Number key`
+/// definitions in `CONTEXT.md`. The `=` key is handled separately (it's styled
+/// uniquely, not part of this categorical hierarchy).
+fn categorize(label: &str) -> KeyCategory {
+    match label {
+        "÷" | "×" | "−" | "+" | "%" | "^" => KeyCategory::Operator,
+        "C" | "Del" | "(" | ")" => KeyCategory::Control,
+        _ => KeyCategory::Number,
+    }
+}
+
+#[cfg(test)]
+mod categorize_tests {
+    use super::*;
+
+    #[test]
+    fn arithmetic_operators_are_operator_keys() {
+        for label in ["÷", "×", "−", "+"] {
+            assert_eq!(categorize(label), KeyCategory::Operator, "{label}");
+        }
+    }
+
+    #[test]
+    fn percent_and_power_are_operator_keys() {
+        // % and ^ are binary arithmetic operators just like the other four,
+        // so they must not fall back to Control styling (see CONTEXT.md).
+        assert_eq!(categorize("%"), KeyCategory::Operator);
+        assert_eq!(categorize("^"), KeyCategory::Operator);
+    }
+
+    #[test]
+    fn non_arithmetic_actions_are_control_keys() {
+        for label in ["C", "Del", "(", ")"] {
+            assert_eq!(categorize(label), KeyCategory::Control, "{label}");
+        }
+    }
+
+    #[test]
+    fn digits_and_decimal_point_are_number_keys() {
+        for label in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."] {
+            assert_eq!(categorize(label), KeyCategory::Number, "{label}");
+        }
+    }
+}
+
 impl eframe::App for CalculatorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -211,10 +264,10 @@ impl eframe::App for CalculatorApp {
                 for row in rows {
                     ui.horizontal(|ui| {
                         for label in row {
-                            let (bg, fg) = match label {
-                                "C" | "Del" | "(" | ")" | "%" => (CTRL_BG, TEXT_MUTED),
-                                "÷" | "×" | "−" | "+" => (OP_BG, TEXT),
-                                _ => (NUM_BG, TEXT),
+                            let (bg, fg) = match categorize(label) {
+                                KeyCategory::Control => (CTRL_BG, TEXT_MUTED),
+                                KeyCategory::Operator => (OP_BG, TEXT),
+                                KeyCategory::Number => (NUM_BG, TEXT),
                             };
                             if calc_button(ui, label, bg, fg) {
                                 self.handle_label(label);
@@ -224,7 +277,7 @@ impl eframe::App for CalculatorApp {
                 }
 
                 ui.horizontal(|ui| {
-                    if calc_button(ui, "^", CTRL_BG, TEXT_MUTED) {
+                    if calc_button(ui, "^", OP_BG, TEXT) {
                         self.push("^");
                     }
 
