@@ -3,21 +3,225 @@ use rust_calculator::{calculator, format_result};
 
 const WINDOW_SIZE: [f32; 2] = [278.0, 400.0];
 
-const APP_BG: egui::Color32 = egui::Color32::from_rgb(17, 18, 21);
-const DISPLAY_BG: egui::Color32 = egui::Color32::from_rgb(26, 27, 32);
-const DISPLAY_BORDER: egui::Color32 = egui::Color32::from_rgb(42, 43, 50);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(236, 237, 241);
-const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(112, 114, 124);
-const ERROR: egui::Color32 = egui::Color32::from_rgb(224, 108, 108);
-const NUM_BG: egui::Color32 = egui::Color32::from_rgb(38, 39, 46);
-const CTRL_BG: egui::Color32 = egui::Color32::from_rgb(50, 51, 60);
-const OP_BG: egui::Color32 = egui::Color32::from_rgb(51, 72, 102);
+// The equals-key accent is the one color that does NOT mirror between
+// modes (grilling session decision Q6) — it's a plain constant, not part
+// of `Palette`.
 const EQUALS_BG: egui::Color32 = egui::Color32::from_rgb(47, 110, 227);
 
 const BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 44.0);
 const SPACING: f32 = 5.0;
 const CORNER_RADIUS: u8 = 10;
 const DISPLAY_HEIGHT: f32 = 54.0;
+
+/// Converts sRGB `[0,255]` to HSL: hue in `[0,360)`, saturation and
+/// lightness in `[0,1]`.
+fn rgb_to_hsl(c: egui::Color32) -> (f32, f32, f32) {
+    let r = c.r() as f32 / 255.0;
+    let g = c.g() as f32 / 255.0;
+    let b = c.b() as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    let d = max - min;
+    if d < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let mut h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    }
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> egui::Color32 {
+    if s < f32::EPSILON {
+        let v = (l * 255.0).round().clamp(0.0, 255.0) as u8;
+        return egui::Color32::from_rgb(v, v, v);
+    }
+
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = match h {
+        h if h < 60.0 => (c, x, 0.0),
+        h if h < 120.0 => (x, c, 0.0),
+        h if h < 180.0 => (0.0, c, x),
+        h if h < 240.0 => (0.0, x, c),
+        h if h < 300.0 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to_u8 = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgb(to_u8(r1), to_u8(g1), to_u8(b1))
+}
+
+/// Inverts a color's lightness around the midpoint while preserving hue
+/// and saturation. This is the "systematic mirror" derivation agreed for
+/// deriving the light-mode palette from the dark one (grilling session
+/// decision Q5).
+fn mirror_lightness(c: egui::Color32) -> egui::Color32 {
+    let (h, s, l) = rgb_to_hsl(c);
+    hsl_to_rgb(h, s, 1.0 - l)
+}
+
+/// WCAG relative luminance of an sRGB color.
+// Only exercised by `palette_tests` today, which is exactly its job: it
+// exists to make an under-contrast palette fail the build, not for any
+// runtime UI behavior.
+#[allow(dead_code)]
+fn relative_luminance(c: egui::Color32) -> f32 {
+    let channel = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+}
+
+/// WCAG contrast ratio between two colors (1.0 = no contrast, 21.0 = max).
+#[allow(dead_code)]
+fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (lighter, darker) = if la > lb { (la, lb) } else { (lb, la) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// The GUI's color palette. `dark()` holds the original hand-tuned colors;
+/// `light()` derives from it mechanically via [`mirror_lightness`], with two
+/// documented exceptions:
+///
+/// - `equals_bg` is fixed across both modes (grilling session decision Q6).
+/// - `text_muted` is independently tuned per mode rather than mirrored.
+///   WCAG contrast ratio is *not* preserved under simultaneous lightness
+///   mirroring of both a background and its foreground text — mirroring
+///   `ctrl_bg` and the original `text_muted` together turned a merely
+///   under-threshold dark-mode pairing (~2.6:1) into a badly failing
+///   light-mode one (~1.2:1). Caught by `palette_tests`, not assumed.
+///
+/// See `docs/adr` and `CONTEXT.md` for the categorical hierarchy these
+/// fields map to.
+#[derive(Clone, Copy)]
+struct Palette {
+    app_bg: egui::Color32,
+    display_bg: egui::Color32,
+    display_border: egui::Color32,
+    text: egui::Color32,
+    text_muted: egui::Color32,
+    error: egui::Color32,
+    num_bg: egui::Color32,
+    ctrl_bg: egui::Color32,
+    op_bg: egui::Color32,
+    equals_bg: egui::Color32,
+}
+
+impl Palette {
+    fn dark() -> Self {
+        Self {
+            app_bg: egui::Color32::from_rgb(17, 18, 21),
+            display_bg: egui::Color32::from_rgb(26, 27, 32),
+            display_border: egui::Color32::from_rgb(42, 43, 50),
+            text: egui::Color32::from_rgb(236, 237, 241),
+            text_muted: egui::Color32::from_rgb(140, 142, 152),
+            error: egui::Color32::from_rgb(224, 108, 108),
+            num_bg: egui::Color32::from_rgb(38, 39, 46),
+            ctrl_bg: egui::Color32::from_rgb(50, 51, 60),
+            op_bg: egui::Color32::from_rgb(51, 72, 102),
+            equals_bg: EQUALS_BG,
+        }
+    }
+
+    fn light() -> Self {
+        let dark = Self::dark();
+        Self {
+            app_bg: mirror_lightness(dark.app_bg),
+            display_bg: mirror_lightness(dark.display_bg),
+            display_border: mirror_lightness(dark.display_border),
+            text: mirror_lightness(dark.text),
+            // Independently tuned, not mirrored — see the exception note
+            // on this struct's doc comment.
+            text_muted: egui::Color32::from_rgb(90, 92, 100),
+            error: mirror_lightness(dark.error),
+            num_bg: mirror_lightness(dark.num_bg),
+            ctrl_bg: mirror_lightness(dark.ctrl_bg),
+            op_bg: mirror_lightness(dark.op_bg),
+            equals_bg: dark.equals_bg,
+        }
+    }
+
+    /// Selects the palette matching the currently active egui theme.
+    fn for_theme(dark_mode: bool) -> Self {
+        if dark_mode { Self::dark() } else { Self::light() }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    // All button/display text in this UI is >=17px, well within WCAG's
+    // "large text" category, whose minimum contrast ratio is 3:1.
+    const MIN_CONTRAST: f32 = 3.0;
+
+    #[test]
+    fn mirror_lightness_round_trips_approximately() {
+        for c in [
+            egui::Color32::from_rgb(17, 18, 21),
+            egui::Color32::from_rgb(51, 72, 102),
+            egui::Color32::from_rgb(236, 237, 241),
+        ] {
+            let back = mirror_lightness(mirror_lightness(c));
+            for (a, b) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
+                assert!(
+                    (a as i16 - b as i16).abs() <= 2,
+                    "expected {c:?} to round-trip, got {back:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equals_accent_is_unchanged_between_modes() {
+        assert_eq!(Palette::dark().equals_bg, Palette::light().equals_bg);
+    }
+
+    #[test]
+    fn dark_palette_meets_minimum_contrast() {
+        let p = Palette::dark();
+        assert!(contrast_ratio(p.display_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.display_bg, p.error) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.num_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.ctrl_bg, p.text_muted) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.op_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.equals_bg, egui::Color32::WHITE) >= MIN_CONTRAST);
+    }
+
+    #[test]
+    fn light_palette_meets_minimum_contrast() {
+        let p = Palette::light();
+        assert!(contrast_ratio(p.display_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.display_bg, p.error) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.num_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.ctrl_bg, p.text_muted) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.op_bg, p.text) >= MIN_CONTRAST);
+        assert!(contrast_ratio(p.equals_bg, egui::Color32::WHITE) >= MIN_CONTRAST);
+    }
+}
 
 const INTER_REGULAR: &str = "Inter-Regular";
 
@@ -81,7 +285,10 @@ fn main() -> eframe::Result {
         "Rust Calculator",
         options,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            // Follow the OS light/dark preference live (grilling session
+            // decision Q2); this is egui's default, set explicitly to
+            // document intent rather than rely on it silently.
+            cc.egui_ctx.set_theme(egui::ThemePreference::System);
             cc.egui_ctx.set_fonts(build_fonts());
             Ok(Box::new(CalculatorApp::default()))
         }),
@@ -263,8 +470,10 @@ impl eframe::App for CalculatorApp {
             }
         });
 
+        let palette = Palette::for_theme(ui.visuals().dark_mode);
+
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(APP_BG).inner_margin(16.0))
+            .frame(egui::Frame::new().fill(palette.app_bg).inner_margin(16.0))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(SPACING, SPACING);
 
@@ -274,11 +483,11 @@ impl eframe::App for CalculatorApp {
                     self.display.as_str()
                 };
                 let text_color = if self.error {
-                    ERROR
+                    palette.error
                 } else if self.display.is_empty() {
-                    TEXT_MUTED
+                    palette.text_muted
                 } else {
-                    TEXT
+                    palette.text
                 };
 
                 let display_size = egui::vec2(ui.available_width(), DISPLAY_HEIGHT);
@@ -288,8 +497,8 @@ impl eframe::App for CalculatorApp {
                 painter.rect(
                     rect,
                     CORNER_RADIUS,
-                    DISPLAY_BG,
-                    egui::Stroke::new(1.0, DISPLAY_BORDER),
+                    palette.display_bg,
+                    egui::Stroke::new(1.0, palette.display_border),
                     egui::StrokeKind::Inside,
                 );
                 painter.text(
@@ -314,9 +523,9 @@ impl eframe::App for CalculatorApp {
                     ui.horizontal(|ui| {
                         for label in row {
                             let (bg, fg) = match categorize(label) {
-                                KeyCategory::Control => (CTRL_BG, TEXT_MUTED),
-                                KeyCategory::Operator => (OP_BG, TEXT),
-                                KeyCategory::Number => (NUM_BG, TEXT),
+                                KeyCategory::Control => (palette.ctrl_bg, palette.text_muted),
+                                KeyCategory::Operator => (palette.op_bg, palette.text),
+                                KeyCategory::Number => (palette.num_bg, palette.text),
                             };
                             if calc_button(ui, label, bg, fg) {
                                 self.handle_label(label);
@@ -326,7 +535,7 @@ impl eframe::App for CalculatorApp {
                 }
 
                 ui.horizontal(|ui| {
-                    if calc_button(ui, "^", OP_BG, TEXT) {
+                    if calc_button(ui, "^", palette.op_bg, palette.text) {
                         self.push("^");
                     }
 
