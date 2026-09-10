@@ -1,0 +1,12 @@
+[package]
+name = "rust-calculator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "calc"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.36.2"
+egui = "0.36.2"
