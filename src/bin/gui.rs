@@ -10,6 +10,10 @@ const EQUALS_BG: egui::Color32 = egui::Color32::from_rgb(47, 110, 227);
 
 const BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 44.0);
 const SPACING: f32 = 5.0;
+// No literal HIG value exists to anchor this to (see
+// docs/research/macos-style-ui.md). Reviewed via screenshot in both dark
+// and light mode while implementing the theme-aware palette (#3) and kept
+// at its pre-existing value — it already reads well in both.
 const CORNER_RADIUS: u8 = 10;
 const DISPLAY_HEIGHT: f32 = 54.0;
 
@@ -409,6 +413,18 @@ fn categorize(label: &str) -> KeyCategory {
     }
 }
 
+/// The (background, foreground) color pair for a key's category. The single
+/// place that maps `KeyCategory` to `Palette` fields, so every button —
+/// including `^`, which isn't part of the row grid — goes through it rather
+/// than re-deriving the mapping inline.
+fn key_colors(palette: &Palette, category: KeyCategory) -> (egui::Color32, egui::Color32) {
+    match category {
+        KeyCategory::Control => (palette.ctrl_bg, palette.text_muted),
+        KeyCategory::Operator => (palette.op_bg, palette.text),
+        KeyCategory::Number => (palette.num_bg, palette.text),
+    }
+}
+
 #[cfg(test)]
 mod categorize_tests {
     use super::*;
@@ -522,11 +538,7 @@ impl eframe::App for CalculatorApp {
                 for row in rows {
                     ui.horizontal(|ui| {
                         for label in row {
-                            let (bg, fg) = match categorize(label) {
-                                KeyCategory::Control => (palette.ctrl_bg, palette.text_muted),
-                                KeyCategory::Operator => (palette.op_bg, palette.text),
-                                KeyCategory::Number => (palette.num_bg, palette.text),
-                            };
+                            let (bg, fg) = key_colors(&palette, categorize(label));
                             if calc_button(ui, label, bg, fg) {
                                 self.handle_label(label);
                             }
@@ -535,7 +547,8 @@ impl eframe::App for CalculatorApp {
                 }
 
                 ui.horizontal(|ui| {
-                    if calc_button(ui, "^", palette.op_bg, palette.text) {
+                    let (bg, fg) = key_colors(&palette, categorize("^"));
+                    if calc_button(ui, "^", bg, fg) {
                         self.push("^");
                     }
 
