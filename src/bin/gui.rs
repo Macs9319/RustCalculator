@@ -19,6 +19,54 @@ const SPACING: f32 = 5.0;
 const CORNER_RADIUS: u8 = 10;
 const DISPLAY_HEIGHT: f32 = 54.0;
 
+const INTER_REGULAR: &str = "Inter-Regular";
+
+/// Inserts the embedded Inter font at the front of the proportional family
+/// (used for all button/label text), leaving the monospace family — and so
+/// the numeric display, which explicitly requests monospace — untouched.
+/// See ADR-0002 for why Inter rather than SF Pro or the system font.
+fn build_fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        INTER_REGULAR.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../assets/fonts/Inter-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, INTER_REGULAR.to_owned());
+    fonts
+}
+
+#[cfg(test)]
+mod build_fonts_tests {
+    use super::*;
+
+    #[test]
+    fn embeds_inter_regular_font_data() {
+        assert!(build_fonts().font_data.contains_key(INTER_REGULAR));
+    }
+
+    #[test]
+    fn inter_leads_the_proportional_family() {
+        let fonts = build_fonts();
+        let proportional = &fonts.families[&egui::FontFamily::Proportional];
+        assert_eq!(proportional.first(), Some(&INTER_REGULAR.to_owned()));
+    }
+
+    #[test]
+    fn monospace_family_is_untouched_by_inter() {
+        // The numeric display relies on the default monospace font for
+        // stable digit widths; Inter must never appear in this family.
+        let fonts = build_fonts();
+        let monospace = &fonts.families[&egui::FontFamily::Monospace];
+        assert!(!monospace.contains(&INTER_REGULAR.to_owned()));
+    }
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -34,6 +82,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            cc.egui_ctx.set_fonts(build_fonts());
             Ok(Box::new(CalculatorApp::default()))
         }),
     )
